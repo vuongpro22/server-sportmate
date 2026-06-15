@@ -11,6 +11,7 @@ const partnerRoutes = require("./routes/partnerRoutes");
 const courtRoutes = require("./routes/courtRoutes");
 const venueRoutes = require("./routes/venueRoutes");
 const messageRoutes = require("./routes/messageRoutes");
+const courtBookingRoutes = require("./routes/courtBookingRoutes");
 const http = require("http");
 const { Server } = require("socket.io");
 const Message = require("./models/Message");
@@ -58,6 +59,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/matches", matchRoutes);
 app.use("/api/venues", venueRoutes);
 app.use("/api/messages", messageRoutes);
+app.use("/api/court-bookings", courtBookingRoutes);
 
 // Socket.IO logic
 io.on("connection", (socket) => {

@@ -271,6 +271,14 @@ async function cancelBooking(req, res) {
       return res.json(bookingJsonWithUser(booking));
     }
 
+    // Check if the booking date and slot start time has already passed
+    const [year, month, day] = booking.bookingDate.split('-').map(Number);
+    const [hours, minutes] = booking.startTime.split(':').map(Number);
+    const slotStartDate = new Date(year, month - 1, day, hours, minutes, 0);
+    if (new Date() > slotStartDate) {
+      return res.status(400).json({ error: 'Không thể hủy lịch đặt sân đã qua thời gian' });
+    }
+
     booking.status = isOwner && !isBooker ? 'cancelled_by_owner' : 'cancelled_by_user';
     await booking.save();
     await booking.populate('userId', 'name username phone avatar');
@@ -281,9 +289,67 @@ async function cancelBooking(req, res) {
   }
 }
 
+async function listOwnerBookings(req, res) {
+  try {
+    const { ownerId } = req.query;
+    if (!ownerId || !mongoose.Types.ObjectId.isValid(String(ownerId))) {
+      return res.status(400).json({ error: 'Thiếu hoặc sai ownerId' });
+    }
+
+    const bookings = await CourtBooking.find({ ownerId })
+      .sort({ createdAt: -1 })
+      .limit(300)
+      .populate('courtId', 'name sportKey sport address pricePerHour')
+      .populate('userId', 'name username phone avatar');
+
+    return res.json(
+      bookings.map((booking) => {
+        const json = bookingJsonWithUser(booking);
+        if (booking.populated('courtId') && booking.courtId) {
+          json.court = booking.courtId.toJSON();
+        }
+        return json;
+      }),
+    );
+  } catch (error) {
+    console.error('❌ GET /api/court-bookings/owner', error);
+    return res.status(500).json({ error: 'Không lấy được danh sách booking của chủ sân' });
+  }
+}
+
+async function listUserBookings(req, res) {
+  try {
+    const { userId } = req.query;
+    if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) {
+      return res.status(400).json({ error: 'Thiếu hoặc sai userId' });
+    }
+
+    const bookings = await CourtBooking.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(300)
+      .populate('courtId', 'name sportKey sport address pricePerHour')
+      .populate('ownerId', 'name username phone avatar');
+
+    return res.json(
+      bookings.map((booking) => {
+        const json = bookingJsonWithUser(booking);
+        if (booking.populated('courtId') && booking.courtId) {
+          json.court = booking.courtId.toJSON();
+        }
+        return json;
+      }),
+    );
+  } catch (error) {
+    console.error('❌ GET /api/court-bookings/user', error);
+    return res.status(500).json({ error: 'Không lấy được danh sách đặt sân của người dùng' });
+  }
+}
+
 module.exports = {
   cancelBooking,
   createBooking,
   getAvailability,
   listCourtBookings,
+  listOwnerBookings,
+  listUserBookings,
 };
