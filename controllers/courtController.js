@@ -70,8 +70,8 @@ async function resolveOwnerUser(ownerId) {
     return { error: 'Không tìm thấy người dùng', status: 404 };
   }
 
-  if (user.role !== 'owner' && user.role !== 'admin') {
-    return { error: 'Chỉ tài khoản owner mới được đăng hoặc quản lý sân', status: 403 };
+  if (user.role !== 'owner' && user.role !== 'admin' && user.role !== 'user') {
+    return { error: 'Chỉ tài khoản owner hoặc user đang đăng ký mới được thực hiện', status: 403 };
   }
 
   return { user };
@@ -470,6 +470,13 @@ async function approveCourt(req, res) {
     ).populate('ownerId', 'name username avatar phone role');
 
     if (!court) return res.status(404).json({ error: 'Không tìm thấy sân' });
+
+    // Khi duyệt sân, nếu chủ sân có role là 'user', tự động đổi thành 'owner'
+    if (court.ownerId && court.ownerId.role === 'user') {
+      await User.findByIdAndUpdate(court.ownerId._id || court.ownerId.id, { role: 'owner' });
+      court.ownerId.role = 'owner';
+    }
+
     return res.json(courtJsonWithOwner(court));
   } catch (error) {
     console.error('❌ PATCH /api/admin/courts/:id/approve', error);

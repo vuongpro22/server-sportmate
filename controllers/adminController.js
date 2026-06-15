@@ -16,7 +16,6 @@ function assertValidObjectId(id, name = 'id') {
   }
 }
 
-// Get statistics for admin dashboard
 async function getStats(_req, res) {
   try {
     const [
@@ -101,7 +100,7 @@ async function updateUserRole(req, res) {
     assertValidObjectId(id, 'userId');
 
     const nextRole = String(role || '').trim();
-    if (!['user', 'admin'].includes(nextRole)) {
+    if (!['user', 'owner', 'admin'].includes(nextRole)) {
       return res.status(400).json({ error: 'role không hợp lệ' });
     }
 
