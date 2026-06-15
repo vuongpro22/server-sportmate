@@ -16,6 +16,75 @@ function assertValidObjectId(id, name = 'id') {
   }
 }
 
+function parseTimeToMinutesRange(timeStr) {
+  const s = String(timeStr || '').trim();
+  if (!s) return null;
+
+  const range = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(s);
+  if (range) {
+    const startH = Number(range[1]);
+    const startM = Number(range[2]);
+    const endH = Number(range[3]);
+    const endM = Number(range[4]);
+    const start = startH * 60 + startM;
+    const end = endH * 60 + endM;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+    return { start, end };
+  }
+
+  const one = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (one) {
+    const startH = Number(one[1]);
+    const startM = Number(one[2]);
+    const start = startH * 60 + startM;
+    const end = start + 60;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return { start, end };
+  }
+
+  return null;
+}
+
+async function recalculateUserStats(userId) {
+  if (!userId) return;
+  const u = await User.findById(userId);
+  if (!u) return;
+
+  const played = await Match.countDocuments({
+    status: 'finished',
+    $or: [{ hostId: u._id }, { participantIds: u._id }],
+  });
+
+  const won = await Match.countDocuments({
+    status: 'finished',
+    winners: u._id,
+  });
+
+  const winRate = played > 0 ? Math.round((won / played) * 100) : 0;
+
+  let hoursActive = 0;
+  const finishedMatches = await Match.find({
+    status: 'finished',
+    $or: [{ hostId: u._id }, { participantIds: u._id }],
+  });
+
+  for (const m of finishedMatches) {
+    const r = parseTimeToMinutesRange(m.time);
+    if (r) {
+      hoursActive += (r.end - r.start) / 60;
+    }
+  }
+  hoursActive = Math.round(hoursActive * 10) / 10;
+
+  u.stats = u.stats || {};
+  u.stats.matchesPlayed = played;
+  u.stats.matchesWon = won;
+  u.stats.winRate = winRate;
+  u.stats.hoursActive = hoursActive;
+
+  await u.save();
+}
+
 async function getStats(_req, res) {
   try {
     const [
@@ -686,60 +755,19 @@ async function patchAdminMatch(req, res) {
 
     await doc.save();
 
-    if (doc.status === 'finished' && prevStatus !== 'finished') {
-      const winnerSet = new Set((Array.isArray(doc.winners) ? doc.winners : []).map((w) => String(w)));
-
+    if (doc.status === 'finished' || prevStatus === 'finished') {
       const participantIdSet = new Set(
         [
           ...((doc.participantIds || []).map((p) => String(p)) || []),
           String(doc.hostId),
+          ...prevWinners,
+          ...(doc.winners || []).map((w) => String(w))
         ].filter(Boolean),
       );
 
       const userIds = Array.from(participantIdSet);
-      const users = await User.find({ _id: { $in: userIds } });
-
-      for (const u of users) {
-        const uid = String(u._id);
-        const played = Number(u.stats?.matchesPlayed ?? 0);
-        const won = Number(u.stats?.matchesWon ?? 0);
-
-        const newPlayed = played + 1;
-        const newWon = won + (winnerSet.has(uid) ? 1 : 0);
-        const newWinRate = newPlayed > 0 ? Math.round((newWon / newPlayed) * 100) : 0;
-
-        u.stats.matchesPlayed = newPlayed;
-        u.stats.matchesWon = newWon;
-        u.stats.winRate = newWinRate;
-        await u.save();
-      }
-    } else if (doc.status === 'finished' && prevStatus === 'finished') {
-      // Nếu trận đã kết thúc từ trước và chỉ cập nhật lại người thắng cuộc
-      const winnerIds = (doc.winners || []).map((w) => String(w));
-      const addedWinners = winnerIds.filter((w) => !prevWinners.includes(w));
-      const removedWinners = prevWinners.filter((w) => !winnerIds.includes(w));
-
-      if (addedWinners.length > 0 || removedWinners.length > 0) {
-        const affectedUserIds = [...addedWinners, ...removedWinners];
-        const users = await User.find({ _id: { $in: affectedUserIds } });
-
-        for (const u of users) {
-          const uid = String(u._id);
-          const played = Number(u.stats?.matchesPlayed ?? 0);
-          let won = Number(u.stats?.matchesWon ?? 0);
-
-          if (addedWinners.includes(uid)) {
-            won += 1;
-          } else if (removedWinners.includes(uid)) {
-            won = Math.max(0, won - 1);
-          }
-
-          const newWinRate = played > 0 ? Math.round((won / played) * 100) : 0;
-
-          u.stats.matchesWon = won;
-          u.stats.winRate = newWinRate;
-          await u.save();
-        }
+      for (const uid of userIds) {
+        await recalculateUserStats(uid);
       }
     }
 

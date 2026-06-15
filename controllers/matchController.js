@@ -33,6 +33,46 @@ function parseTimeToMinutesRange(timeStr) {
   return null;
 }
 
+async function recalculateUserStats(userId) {
+  if (!userId) return;
+  const u = await User.findById(userId);
+  if (!u) return;
+
+  const played = await Match.countDocuments({
+    status: 'finished',
+    $or: [{ hostId: u._id }, { participantIds: u._id }],
+  });
+
+  const won = await Match.countDocuments({
+    status: 'finished',
+    winners: u._id,
+  });
+
+  const winRate = played > 0 ? Math.round((won / played) * 100) : 0;
+
+  let hoursActive = 0;
+  const finishedMatches = await Match.find({
+    status: 'finished',
+    $or: [{ hostId: u._id }, { participantIds: u._id }],
+  });
+
+  for (const m of finishedMatches) {
+    const r = parseTimeToMinutesRange(m.time);
+    if (r) {
+      hoursActive += (r.end - r.start) / 60;
+    }
+  }
+  hoursActive = Math.round(hoursActive * 10) / 10;
+
+  u.stats = u.stats || {};
+  u.stats.matchesPlayed = played;
+  u.stats.matchesWon = won;
+  u.stats.winRate = winRate;
+  u.stats.hoursActive = hoursActive;
+
+  await u.save();
+}
+
 function rangesOverlap(a, b) {
   if (!a || !b) return false;
   return a.start < b.end && b.start < a.end;
@@ -243,16 +283,6 @@ async function autoFinishExpiredHostMatches(req, res) {
       doc.cancelReason = '';
       await doc.save();
 
-      const winnerSet = new Set(
-        (Array.isArray(doc.winners) ? doc.winners : []).map((w) => String(w)),
-      );
-      const docDurationHours = (() => {
-        const r = parseTimeToMinutesRange(doc.time);
-        if (!r) return 0;
-        const hours = (r.end - r.start) / 60;
-        return Math.round(hours * 10) / 10;
-      })();
-
       const participantIdSet = new Set(
         [
           ...((doc.participantIds || []).map((p) => String(p)) || []),
@@ -261,24 +291,8 @@ async function autoFinishExpiredHostMatches(req, res) {
       );
 
       const userIds = Array.from(participantIdSet);
-      const users = await User.find({ _id: { $in: userIds } });
-      for (const u of users) {
-        const uid = String(u._id);
-        const played = Number(u.stats?.matchesPlayed ?? 0);
-        const won = Number(u.stats?.matchesWon ?? 0);
-
-        const newPlayed = played + 1;
-        const newWon = won + (winnerSet.has(uid) ? 1 : 0);
-        const newWinRate = newPlayed > 0 ? Math.round((newWon / newPlayed) * 100) : 0;
-
-        u.stats.matchesPlayed = newPlayed;
-        u.stats.matchesWon = newWon;
-        u.stats.winRate = newWinRate;
-        if (docDurationHours > 0) {
-          const curHours = Number(u.stats?.hoursActive ?? 0);
-          u.stats.hoursActive = curHours + docDurationHours;
-        }
-        await u.save();
+      for (const uid of userIds) {
+        await recalculateUserStats(uid);
       }
 
       updated += 1;
@@ -631,77 +645,19 @@ async function patchMatch(req, res) {
 
     await doc.save();
 
-    // Nếu host chuyển trận từ active -> finished thì cập nhật thống kê tất cả người tham gia.
-    // - matchesPlayed: tăng 1 cho host + mọi participant trong trận.
-    // - matchesWon/winRate: tăng nếu user nằm trong winners.
-    if (doc.status === 'finished' && prevStatus !== 'finished') {
-      const winnerSet = new Set(
-        (Array.isArray(doc.winners) ? doc.winners : []).map((w) => String(w)),
-      );
-
-      const docDurationHours = (() => {
-        const r = parseTimeToMinutesRange(doc.time);
-        if (!r) return 0;
-        const hours = (r.end - r.start) / 60;
-        return Math.round(hours * 10) / 10;
-      })();
-
+    if (doc.status === 'finished' || prevStatus === 'finished') {
       const participantIdSet = new Set(
         [
           ...((doc.participantIds || []).map((p) => String(p)) || []),
           String(doc.hostId),
+          ...prevWinners,
+          ...(doc.winners || []).map((w) => String(w))
         ].filter(Boolean),
       );
 
       const userIds = Array.from(participantIdSet);
-      const users = await User.find({ _id: { $in: userIds } });
-
-      for (const u of users) {
-        const uid = String(u._id);
-        const played = Number(u.stats?.matchesPlayed ?? 0);
-        const won = Number(u.stats?.matchesWon ?? 0);
-
-        const newPlayed = played + 1;
-        const newWon = won + (winnerSet.has(uid) ? 1 : 0);
-        const newWinRate =
-          newPlayed > 0 ? Math.round((newWon / newPlayed) * 100) : 0;
-
-        u.stats.matchesPlayed = newPlayed;
-        u.stats.matchesWon = newWon;
-        u.stats.winRate = newWinRate;
-        if (docDurationHours > 0) {
-          const curHours = Number(u.stats?.hoursActive ?? 0);
-          u.stats.hoursActive = curHours + docDurationHours;
-        }
-        await u.save();
-      }
-    } else if (doc.status === 'finished' && prevStatus === 'finished') {
-      // Nếu trận đã kết thúc từ trước và chỉ cập nhật lại người thắng cuộc
-      const winnerIds = (doc.winners || []).map((w) => String(w));
-      const addedWinners = winnerIds.filter((w) => !prevWinners.includes(w));
-      const removedWinners = prevWinners.filter((w) => !winnerIds.includes(w));
-
-      if (addedWinners.length > 0 || removedWinners.length > 0) {
-        const affectedUserIds = [...addedWinners, ...removedWinners];
-        const users = await User.find({ _id: { $in: affectedUserIds } });
-
-        for (const u of users) {
-          const uid = String(u._id);
-          const played = Number(u.stats?.matchesPlayed ?? 0);
-          let won = Number(u.stats?.matchesWon ?? 0);
-
-          if (addedWinners.includes(uid)) {
-            won += 1;
-          } else if (removedWinners.includes(uid)) {
-            won = Math.max(0, won - 1);
-          }
-
-          const newWinRate = played > 0 ? Math.round((won / played) * 100) : 0;
-
-          u.stats.matchesWon = won;
-          u.stats.winRate = newWinRate;
-          await u.save();
-        }
+      for (const uid of userIds) {
+        await recalculateUserStats(uid);
       }
     }
 
