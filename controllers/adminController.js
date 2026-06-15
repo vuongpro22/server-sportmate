@@ -583,6 +583,7 @@ async function patchAdminMatch(req, res) {
     }
 
     const prevStatus = doc.status;
+    const prevWinners = (doc.winners || []).map((w) => String(w));
 
     if (status !== undefined) {
       const next = String(status);
@@ -711,6 +712,34 @@ async function patchAdminMatch(req, res) {
         u.stats.matchesWon = newWon;
         u.stats.winRate = newWinRate;
         await u.save();
+      }
+    } else if (doc.status === 'finished' && prevStatus === 'finished') {
+      // Nếu trận đã kết thúc từ trước và chỉ cập nhật lại người thắng cuộc
+      const winnerIds = (doc.winners || []).map((w) => String(w));
+      const addedWinners = winnerIds.filter((w) => !prevWinners.includes(w));
+      const removedWinners = prevWinners.filter((w) => !winnerIds.includes(w));
+
+      if (addedWinners.length > 0 || removedWinners.length > 0) {
+        const affectedUserIds = [...addedWinners, ...removedWinners];
+        const users = await User.find({ _id: { $in: affectedUserIds } });
+
+        for (const u of users) {
+          const uid = String(u._id);
+          const played = Number(u.stats?.matchesPlayed ?? 0);
+          let won = Number(u.stats?.matchesWon ?? 0);
+
+          if (addedWinners.includes(uid)) {
+            won += 1;
+          } else if (removedWinners.includes(uid)) {
+            won = Math.max(0, won - 1);
+          }
+
+          const newWinRate = played > 0 ? Math.round((won / played) * 100) : 0;
+
+          u.stats.matchesWon = won;
+          u.stats.winRate = newWinRate;
+          await u.save();
+        }
       }
     }
 
