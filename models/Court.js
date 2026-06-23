@@ -12,6 +12,16 @@ const courtSchema = new mongoose.Schema(
     sport: { type: String, default: '' },
     address: { type: String, required: true, trim: true },
     pricePerHour: { type: Number, default: 0, min: 0 },
+    timeSlotPrices: {
+      type: [
+        {
+          startTime: { type: String, required: true },
+          endTime: { type: String, required: true },
+          price: { type: Number, required: true, min: 0 },
+        }
+      ],
+      default: []
+    },
     description: { type: String, default: '' },
     amenities: { type: [String], default: [] },
     images: { type: [String], default: [] },

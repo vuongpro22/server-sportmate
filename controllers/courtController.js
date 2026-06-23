@@ -171,6 +171,7 @@ async function createCourt(req, res) {
       openTime,
       closeTime,
       slotMinutes,
+      timeSlotPrices,
     } = req.body || {};
 
     const ownerResult = await resolveOwnerUser(ownerId);
@@ -208,6 +209,34 @@ async function createCourt(req, res) {
       : normalizeImageList(imageUrl);
     const normalizedHours = normalizeCourtHours({ openTime, closeTime, slotMinutes });
 
+    let normalizedTimeSlotPrices = [];
+    if (Array.isArray(timeSlotPrices)) {
+      const { parseClockToMinutes } = require('../utils/courtSchedule');
+      for (const rule of timeSlotPrices) {
+        const { startTime, endTime, price } = rule || {};
+        const startTrim = String(startTime || '').trim();
+        const endTrim = String(endTime || '').trim();
+        const priceNum = Number(price || 0);
+
+        if (!/^\d{2}:\d{2}$/.test(startTrim) || !/^\d{2}:\d{2}$/.test(endTrim)) {
+          return res.status(400).json({ error: 'Khung giờ phải có định dạng HH:MM' });
+        }
+        const startMin = parseClockToMinutes(startTrim);
+        const endMin = parseClockToMinutes(endTrim);
+        if (startMin === null || endMin === null || startMin >= endMin) {
+          return res.status(400).json({ error: 'Giờ bắt đầu phải nhỏ hơn giờ kết thúc' });
+        }
+        if (!Number.isFinite(priceNum) || priceNum < 0) {
+          return res.status(400).json({ error: 'Giá khung giờ phải là số không âm' });
+        }
+        normalizedTimeSlotPrices.push({
+          startTime: startTrim,
+          endTime: endTrim,
+          price: Math.round(priceNum),
+        });
+      }
+    }
+
     const court = await Court.create({
       ownerId,
       name: nameTrim,
@@ -224,6 +253,7 @@ async function createCourt(req, res) {
       openTime: normalizedHours.openTime,
       closeTime: normalizedHours.closeTime,
       slotMinutes: normalizedHours.slotMinutes,
+      timeSlotPrices: normalizedTimeSlotPrices,
       // Sân mới luôn ở trạng thái chờ duyệt
       approvalStatus: 'pending',
       rejectReason: '',
@@ -260,6 +290,7 @@ async function patchCourt(req, res) {
       openTime,
       closeTime,
       slotMinutes,
+      timeSlotPrices,
     } = req.body || {};
 
     const ownerResult = await resolveOwnerUser(ownerId);
@@ -346,6 +377,37 @@ async function patchCourt(req, res) {
       doc.openTime = normalizedHours.openTime;
       doc.closeTime = normalizedHours.closeTime;
       doc.slotMinutes = normalizedHours.slotMinutes;
+    }
+
+    if (timeSlotPrices !== undefined) {
+      let normalizedTimeSlotPrices = [];
+      if (Array.isArray(timeSlotPrices)) {
+        const { parseClockToMinutes } = require('../utils/courtSchedule');
+        for (const rule of timeSlotPrices) {
+          const { startTime, endTime, price } = rule || {};
+          const startTrim = String(startTime || '').trim();
+          const endTrim = String(endTime || '').trim();
+          const priceNum = Number(price || 0);
+
+          if (!/^\d{2}:\d{2}$/.test(startTrim) || !/^\d{2}:\d{2}$/.test(endTrim)) {
+            return res.status(400).json({ error: 'Khung giờ phải có định dạng HH:MM' });
+          }
+          const startMin = parseClockToMinutes(startTrim);
+          const endMin = parseClockToMinutes(endTrim);
+          if (startMin === null || endMin === null || startMin >= endMin) {
+            return res.status(400).json({ error: 'Giờ bắt đầu phải nhỏ hơn giờ kết thúc' });
+          }
+          if (!Number.isFinite(priceNum) || priceNum < 0) {
+            return res.status(400).json({ error: 'Giá khung giờ phải là số không âm' });
+          }
+          normalizedTimeSlotPrices.push({
+            startTime: startTrim,
+            endTime: endTrim,
+            price: Math.round(priceNum),
+          });
+        }
+      }
+      doc.timeSlotPrices = normalizedTimeSlotPrices;
     }
 
     await doc.save();

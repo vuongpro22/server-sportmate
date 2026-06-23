@@ -11,6 +11,22 @@ const {
   todayDateKey,
 } = require('../utils/courtSchedule');
 
+function getPriceForSlot(court, startMin, endMin) {
+  if (court.timeSlotPrices && court.timeSlotPrices.length > 0) {
+    const { parseClockToMinutes } = require('../utils/courtSchedule');
+    for (const rule of court.timeSlotPrices) {
+      const ruleStart = parseClockToMinutes(rule.startTime);
+      const ruleEnd = parseClockToMinutes(rule.endTime);
+      if (ruleStart !== null && ruleEnd !== null) {
+        if (startMin >= ruleStart && endMin <= ruleEnd) {
+          return rule.price;
+        }
+      }
+    }
+  }
+  return court.pricePerHour;
+}
+
 function bookingJsonWithUser(doc) {
   const json = doc.toJSON();
   let user = null;
@@ -99,10 +115,14 @@ async function getAvailability(req, res) {
     }).select('bookingDate startMinutes endMinutes startTime endTime');
 
     const hours = getCourtHours(court);
-    const slots = buildCourtSlots(hours).map((slot) => ({
-      ...slot,
-      available: !bookings.some((booking) => booking.startMinutes === slot.startMinutes),
-    }));
+    const slots = buildCourtSlots(hours).map((slot) => {
+      const price = getPriceForSlot(court, slot.startMinutes, slot.endMinutes);
+      return {
+        ...slot,
+        price,
+        available: !bookings.some((booking) => booking.startMinutes === slot.startMinutes),
+      };
+    });
 
     return res.json({
       date,
@@ -159,6 +179,8 @@ async function createBooking(req, res) {
       return res.status(409).json({ error: 'Khung giờ này vừa được người khác đặt' });
     }
 
+    const slotPrice = getPriceForSlot(court, chosenSlot.startMinutes, chosenSlot.endMinutes);
+
     const booking = await CourtBooking.create({
       courtId: id,
       ownerId: court.ownerId._id || court.ownerId,
@@ -169,7 +191,7 @@ async function createBooking(req, res) {
       startMinutes: chosenSlot.startMinutes,
       endMinutes: chosenSlot.endMinutes,
       durationMinutes: hours.slotMinutes,
-      priceSnapshot: Number(court.pricePerHour || 0),
+      priceSnapshot: slotPrice,
       contactName: String(contactName || userResult.user.name || userResult.user.username || '').trim(),
       contactPhone: String(contactPhone || userResult.user.phone || '').trim(),
       note: String(note || '').trim(),

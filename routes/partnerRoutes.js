@@ -129,7 +129,7 @@ function locationDistance(loc1, loc2) {
 // GET /api/partners/suggested - Lấy danh sách partners gợi ý
 router.get('/suggested', async (req, res) => {
   try {
-    const { userId, lat, lng, limit = 20, currentLocation } = req.query;
+    const { userId, lat, lng, limit = 20, currentLocation, q, sport, level } = req.query;
 
     // Lấy thông tin user hiện tại để biết location
     // Ưu tiên: currentLocation (từ GPS) > user.location (từ DB)
@@ -148,15 +148,40 @@ router.get('/suggested', async (req, res) => {
       query._id = { $ne: userId };
     }
 
+    if (q && String(q).trim()) {
+      const pattern = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      query.$or = [{ name: pattern }, { username: pattern }];
+    }
+
+    if (sport && String(sport).trim() && String(sport).trim() !== 'all') {
+      const sportPattern = new RegExp(String(sport).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      query["sports.name"] = sportPattern;
+    }
+
+    if (level && String(level).trim() && String(level).trim() !== 'all') {
+      const levelPattern = new RegExp(String(level).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      query["sports.level"] = levelPattern;
+    }
+
     // Lấy tất cả users (trừ user hiện tại)
     const users = await User.find(query)
       .select('name username avatar location bio stats sports')
       .lean();
 
+    // Helper kiểm tra user có vị trí hay không
+    const hasLocation = (loc) => {
+      if (!loc || typeof loc !== 'string') return false;
+      const l = loc.trim().toLowerCase();
+      if (!l) return false;
+      const vagueKeywords = ['không rõ', 'chưa cập nhật', 'không xác định', 'unknown'];
+      return !vagueKeywords.some(kw => l.includes(kw));
+    };
+
     // Transform và tính distance
     let result = users.map(u => {
       const userLoc = u.location || '';
       const dist = userLocation ? locationDistance(userLocation, userLoc) : 1;
+      const hasLoc = hasLocation(u.location);
 
       return {
         id: u._id.toString(),
@@ -170,30 +195,28 @@ router.get('/suggested', async (req, res) => {
         sport: u.sports?.[0]?.name || null,
         level: u.sports?.[0]?.level || null,
         _distance: dist,
-        _isClear: isClearLocation(u.location),
+        _hasLoc: hasLoc,
       };
     });
 
     // Sắp xếp:
-    // 1. Ưu tiên location rõ ràng (TRUE = 1 lên trước)
-    // 2. Trong cùng nhóm, sắp theo khoảng cách (gần nhất lên đầu)
+    // 1. Có vị trí trước, không có vị trí sau
+    // 2. Cùng có vị trí -> sắp theo khoảng cách (gần nhất lên đầu)
     result.sort((a, b) => {
-      // Rõ ràng trước, mơ hồ sau
-      if (a._isClear !== b._isClear) {
-        return a._isClear ? -1 : 1;
+      if (a._hasLoc !== b._hasLoc) {
+        return a._hasLoc ? -1 : 1;
       }
-      // Cùng nhóm → theo khoảng cách
-      return a._distance - b._distance;
+      if (a._hasLoc) {
+        return a._distance - b._distance;
+      }
+      return 0;
     });
 
-    // Giới hạn số lượng
-    result = result.slice(0, Number(limit));
-
     // Trả về kèm khoảng cách để hiển thị
-    result = result.map(({ _distance, _isClear, ...rest }) => ({
+    result = result.map(({ _distance, _hasLoc, ...rest }) => ({
       ...rest,
       distanceLevel: _distance === 0 ? 'same_city' : _distance === 1 ? 'same_region' : 'far',
-      isLocationClear: _isClear,
+      isLocationClear: _hasLoc,
     }));
 
     res.json({
